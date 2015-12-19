@@ -1,0 +1,132 @@
+#!/usr/bin/python2
+
+#modify to do ray traces
+
+from gurobipy import *
+from PIL import Image
+import sys
+from plotter import plot_graph
+
+if len(sys.argv) < 3 :
+    print("Please supply an input and output file")
+    sys.exit(1)
+
+input_path = sys.argv[1]
+output_path= sys.argv[2]
+h_size = int(sys.argv[3])
+v_size = int(sys.argv[4])
+
+#create model
+m = Model("grid1")
+
+#adj lists
+verts = [[] for x in range(h_size * v_size)]
+
+mat = [[0 for x in range(h_size * v_size)] for y in range(h_size * v_size)]
+
+traces = [[0 for x in range(h_size * v_size)] for y in range(h_size * v_size)]
+
+im = Image.open(input_path)
+pix = im.load()
+width = im.size[0]
+height = im.size[1]
+segw = width // h_size
+segh = height // v_size
+
+def trace(i,j):
+    points = []
+    x0 = i % h_size
+    x1 = j % h_size
+    y0 = i // h_size
+    y1 = j // h_size
+    x0 *= segw
+    x1 *= segw
+    y0 *= segh
+    y1 *= segh
+    steep = abs(y1 - y0) > abs(x1 - x0)
+    if steep:
+        x0, y0 = y0, x0
+        x1, y1 = y1, x1
+    if x0 > x1:
+        x0, x1 = x1, x0
+        y0, y1 = y1, y0
+    deltax = x1 - x0
+    deltay = abs(y1 - y0)
+    error = 0
+    y = y0
+    if y0 <= y1:
+        y_step = 1
+    else:
+        y_step = -1
+    for x in range(x0, x1):
+        if steep:
+            points.append(sum(pix[y,x])//3)
+        else:
+            points.append(sum(pix[x,y])//3)
+
+        if (error << 1) >= deltax:
+            y = y + y_step
+            error = error + 2*(deltay - deltax)
+        else:
+            error = error + 2*deltay
+    return float(sum(points)/len(points))/255.0
+
+def addEdge(i, j):
+    edge = m.addVar(vtype=GRB.BINARY, name=("x" + str(i) + "," + str(j)))
+    verts[i].append(edge)
+    verts[j].append(edge)
+    mat[i][j] = edge
+    mat[j][i] = edge
+    tr = trace(i,j)
+    traces[i][j]=tr
+    traces[j][i]=tr
+
+
+for a in range(0,h_size*v_size):
+    for b in range(a+1,h_size*v_size):
+        addEdge(a,b)
+
+deg = [0 for x in range(0,h_size*v_size)]
+
+#degree mult vars
+for n in range(0,h_size*v_size):
+    deg[n] = m.addVar(vtype=GRB.BINARY, name=("deg"+str(n)))
+
+m.update()
+
+obj = 0
+for i in range(h_size * v_size):
+    for j in range(i,h_size * v_size):
+        obj += mat[i][j] * traces[i][j]
+        obj += (1 - mat[i][j])*(1 - traces[i][j])
+
+m.setObjective(obj, GRB.MAXIMIZE)
+
+#even degree constraints
+for i, vert in enumerate(verts):
+    m.addConstr( quicksum(vert) == 2 * deg[i], ("degmult" + str(i)))
+
+m.optimize()
+
+#now we send stuff to our plotter routine!
+
+#location is printed simply and basically hard-coded
+positions = []
+for i in range(0, v_size):
+    for j in range(0,h_size):
+        positions.append([h_size-1-i,v_size-1-j])
+
+edges = []
+for i in range(0, (h_size * v_size)):
+    for j in range(0, (h_size * v_size)):
+        varname = "x" + str(i) + "," + str(j)
+        try:
+            if m.getVarByName(varname).getAttr("x") == 1.0:
+                edges.append([i,j])
+        except AttributeError:
+            pass
+
+#for edge in edges:
+#    print edge
+
+plot_graph(positions, edges, output_path)

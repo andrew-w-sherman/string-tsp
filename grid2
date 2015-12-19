@@ -1,0 +1,140 @@
+#!/usr/bin/python2
+
+from gurobipy import *
+from PIL import Image
+import sys
+from plotter import plot_graph
+
+if len(sys.argv) < 3 :
+    print("Please supply an input and output file")
+    sys.exit(1)
+
+input_path = sys.argv[1]
+output_path= sys.argv[2]
+h_size = int(sys.argv[3])
+v_size = int(sys.argv[4])
+
+norm_top = 5
+
+#create model
+m = Model("grid1")
+
+crossing_scheme = ((0, 0, 1, 1),(1,0,0,1),(-1,0,1,1),(-1,1,1,0),(0,-1,1,1),(1,-1,0,1),(2,0,0,1),(2,1,0,0),(0,0,1,2),(0,1,0,2))
+
+#adj lists
+verts = [[] for x in range(h_size * v_size)]
+
+#mat = [[] * (h_size * v_size)] * (h_size * v_size)
+mat = [[[[0 for x in range(v_size)] for y in range(h_size)] for a in range(v_size)] for b in range(h_size)]
+#crossing lists
+cross = [[] for x in range((h_size-1) * (v_size-1))]
+
+def addEdge(i, j):
+    edge = m.addVar(vtype=GRB.BINARY, name=("x" + str(i) + "," + str(j)))
+    verts[i].append(edge)
+    verts[j].append(edge)
+    mat[i % h_size][i / h_size][j % h_size][j / h_size] = edge
+    mat[j % h_size][j / h_size][i % h_size][i / h_size] = edge
+
+for n in range(0,h_size*v_size):
+    #add diagonal king moves and knight moves as appropriate
+    x = n % h_size
+    y = n / h_size
+    if (x < (h_size - 1)) and (y < (v_size - 1)):
+        addEdge(n, n + h_size + 1)
+    if x < (h_size - 2) and y < (v_size - 1):
+        addEdge(n, n + h_size + 2)
+    if x < (h_size - 1) and y < (v_size - 2):
+        addEdge(n, n + 2 * h_size + 1)
+    if x > 0 and y < (v_size - 2):
+        addEdge(n, n + 2 * h_size - 1)
+    if x < (h_size - 2) and y > 0:
+        addEdge(n, n - h_size + 2)
+    if x < (h_size - 1) and y > 0:
+        addEdge(n, n - h_size + 1)
+
+deg = [0 for x in range(0,h_size*v_size)]
+
+#degree mult vars
+for n in range(0,h_size*v_size):
+    deg[n] = m.addVar(vtype=GRB.BINARY, name=("deg"+str(n)))
+
+#maximum difference var
+maxdiff = m.addVar(vtype=GRB.CONTINUOUS, name=("maxdiff"))
+
+m.update()
+
+#set obj
+m.setObjective(maxdiff, GRB.MINIMIZE)
+
+#find crossings
+for i,space in enumerate(cross):
+    h = h_size
+    x = i % (h - 1)
+    y = i / (h - 1)
+    n = h_size * y + x
+    for (a,b,c,d) in crossing_scheme:
+        try:
+            space.append(mat[x+a][y+b][x+c][y+d])
+        except IndexError:
+            pass
+
+#find crossing targets
+targets = []
+averages = []
+im = Image.open(input_path)
+pxl = im.load()
+#figure out the segment sizes
+width = im.size[0]
+height = im.size[1]
+segw = width // h_size
+segh = height // v_size
+#collect the segment averages
+for a in range(0,h_size - 1):
+    for b in range(0,v_size - 1):
+        total = 0
+        for i in range(0,segw):
+            for j in range(0,segh):
+                total += sum(pxl[a * segw + i, b * segh + j])
+        averages.append(total // (segw * segh))
+#normalize between 0 and 10 (inclusive)
+for average in averages:
+    average = float(average)
+targets = [norm_top - (float(norm_top * (x - min(averages))) / (max(averages) - min(averages))) for x in averages]
+
+#max difference constraints
+for i,(space,target) in enumerate(zip(cross, targets)):
+    darkness = quicksum(space)
+    #print(darkness - target <= maxdiff)
+    m.addConstr( darkness - target <= maxdiff , ("diff" + str(i) + "," + "0") )
+    m.addConstr( target - darkness <= maxdiff , ("diff" + str(i) + "," + "1") )
+
+#even degree constraints
+print verts[0]
+for i, vert in enumerate(verts):
+    m.addConstr( quicksum(vert) == 2 * deg[i], ("degmult" + str(i)))
+
+m.optimize()
+
+#now we send stuff to our plotter routine!
+
+#location is printed simply and basically hard-coded
+positions = []
+for i in range(0, v_size):
+    for j in range(0,h_size):
+        positions.append([h_size-1-i,v_size-1-j])
+
+edges = []
+for i in range(0, (h_size * v_size)):
+    for j in range(0, (h_size * v_size)):
+        varname = "x" + str(i) + "," + str(j)
+        try:
+            if m.getVarByName(varname).getAttr("x") == 1.0:
+                edges.append([i,j])
+        except AttributeError:
+            pass
+
+#for edge in edges:
+#    print edge
+
+plot_graph(positions, edges, output_path)
